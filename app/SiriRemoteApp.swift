@@ -1363,10 +1363,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         engineController.onActionHandled = { [weak persistentStatus] handled in
             persistentStatus?.showAction(handled)
         }
-        appWatcher = AppWatcher { [weak engineController, weak persistentStatus] bundleID in
+        // 前台应用变化只用于切换按键配置；浮窗由遥控器动作驱动。
+        appWatcher = AppWatcher { [weak engineController] bundleID in
             rmDebug("🎯 frontmost app → \(bundleID)")
             engineController?.frontmostAppChanged(bundleID: bundleID)
-            persistentStatus?.showApplication(bundleID: bundleID)
         }
         configWatcher = ConfigFileWatcher(url: ConfigStore.path) { [weak self] in
             let reloaded = ConfigStore.loadConfig()
@@ -1639,6 +1639,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let wheel = AppWheelController()
         appWheel = wheel
         wheel.configure(apps: config.settings.appWheel)
+        wheel.onApplicationOpened = { [weak persistentStatus] bundleID in
+            persistentStatus?.showApplication(bundleID: bundleID)
+        }
         actionExecutor.onAppWheel = { [weak wheel] in
             guard let wheel = wheel else { return }
             wheel.open()

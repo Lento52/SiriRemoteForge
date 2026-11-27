@@ -275,6 +275,7 @@ struct WedgeShape: Shape {
 // MARK: - Controller
 
 final class AppWheelController {
+    var onApplicationOpened: ((String) -> Void)?
     let model = AppWheelModel()
     private(set) var isOpen = false
 
@@ -336,7 +337,10 @@ final class AppWheelController {
         }
         rmDebug("🎡 app wheel: launching \(app)")
         close()
-        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] running, _ in
+            guard let bundleID = running?.bundleIdentifier else { return }
+            DispatchQueue.main.async { self?.onApplicationOpened?(bundleID) }
+        }
     }
 
     /// Feedback for a not-installed pick: freeze the selection (the outcome is decided), name it as

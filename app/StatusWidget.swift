@@ -308,10 +308,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
     private var pendingControlRefresh: (generation: Int, state: ControlVisualState)?
     private var releasedHold: (key: String, time: CFTimeInterval)?
     private var observerTokens: [NSObjectProtocol] = []
-    /// A launch binding announces the destination before AppWatcher observes activation. Remember
-    /// that app for a moment so the confirmed activation updates the subtitle instead of producing
-    /// a second, visually noisy bounce of the same icon.
-    private var pendingActivation: (name: String, time: CFTimeInterval)?
     private var lastEvent: (key: String, time: CFTimeInterval)?
     /// Rate-driven controls own one stable presentation for the complete burst. Their input can
     /// arrive faster than a 220 ms animation, so subsequent ticks extend the dwell (or atomically
@@ -428,7 +424,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
             guard let self, self.enabled, self.isConnected, !self.isHolding else { return }
             self.idleGeneration += 1
             self.activeContinuousFamily = nil
-            self.pendingActivation = nil
             let icon = self.configuredIcon("voice.mode.\(mode.rawValue)",
                                            fallback: mode.presentationSymbol)
             let face = Face(key: "voice-mode:\(mode.rawValue)",
@@ -454,7 +449,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
             self.isConnected = connected
 
             // A connection edge supersedes any transient/hold presentation in flight.
-            self.pendingActivation = nil
             self.releasedHold = nil
             self.lastEvent = nil
             self.activeContinuousFamily = nil
@@ -496,21 +490,10 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
             guard let self = self, self.enabled, self.isConnected, !self.isHolding else { return }
             self.activeContinuousFamily = nil
             let info = self.applicationInfo(bundleID: bundleID)
-            let now = CACurrentMediaTime()
-            let confirmsPendingLaunch: Bool
-            if let pending = self.pendingActivation,
-               now - pending.time < 2.5,
-               self.normalizedAppName(pending.name) == self.normalizedAppName(info.name) {
-                confirmsPendingLaunch = true
-            } else {
-                confirmsPendingLaunch = false
-            }
-            self.pendingActivation = nil
-
             let face = Face(key: "app:\(bundleID)", title: info.name, subtitle: L("Active App"),
                             image: info.icon, symbolName: nil, symbolCue: nil,
                             tint: self.tint(forBundleID: bundleID), controlState: nil)
-            self.presentTransient(face, duration: duration, animate: !confirmsPendingLaunch,
+            self.presentTransient(face, duration: duration, animate: true,
                                   iconMotion: .applicationArrival,
                                   accentSweep: true)
         }
@@ -598,11 +581,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
             self.lastEvent = (handled.key, now)
 
             let launched = self.launchedAppName(handled.action)
-            if let launched = launched {
-                self.pendingActivation = (launched, now)
-            } else {
-                self.pendingActivation = nil
-            }
             let iconMotion: IconMotion
             if launched != nil {
                 // Opening an app is an arrival, not another button impact. Real app artwork gets
@@ -652,7 +630,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
             self.isTransient = true
             self.holdVisualIsVisible = false
             self.releasedHold = nil
-            self.pendingActivation = nil
             self.activeContinuousFamily = nil
             self.holdBase = base.map {
                 HoldItem(key: $0.key, action: $0.action,
@@ -1066,7 +1043,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         visibilityGeneration += 1
         let generation = visibilityGeneration
         idleGeneration += 1
-        pendingActivation = nil
         activeContinuousFamily = nil
         awaitingNativeVoicePhase = false
         nativeVoiceHandoffGeneration += 1
@@ -1387,12 +1363,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         case .shell(let command): return ActionVisual.appName(fromOpenCommand: command)
         default: return nil
         }
-    }
-
-    private func normalizedAppName(_ name: String) -> String {
-        var value = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.hasSuffix(".app") { value.removeLast(4) }
-        return value.replacingOccurrences(of: " ", with: "")
     }
 
     private func gestureLabel(for key: String) -> String {

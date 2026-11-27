@@ -200,6 +200,9 @@ enum ActionVisual {
     /// Locate an application by display name. Shared with the launcher so an app that shows an icon
     /// is by construction one that can be opened — the two cannot disagree about what a name means.
     static func applicationURL(named name: String) -> URL? {
+        if name.hasPrefix("/"), name.hasSuffix(".app"), FileManager.default.fileExists(atPath: name) {
+            return URL(fileURLWithPath: name)
+        }
         let bare = name.hasSuffix(".app") ? String(name.dropLast(4)) : name
         var candidates = [
             "/Applications/\(bare).app",
