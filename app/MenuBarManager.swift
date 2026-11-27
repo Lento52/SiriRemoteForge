@@ -30,17 +30,21 @@ final class MenuBarManager {
     private let menu: NSMenu
     private let statusMenuItem: NSMenuItem
     private let permissionMenuItem: NSMenuItem
-    private final class StandbyDot: NSView {
+    private final class StatusDot: NSView {
+        var isRecording = false {
+            didSet { if oldValue != isRecording { needsDisplay = true } }
+        }
+
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func draw(_ dirtyRect: NSRect) {
-            NSColor.systemGreen.setFill()
+            (isRecording ? NSColor.systemRed : NSColor.systemGreen).setFill()
             NSBezierPath(ovalIn: bounds).fill()
         }
     }
 
     enum VoiceSource { case remoteShortcut, dictation }
 
-    private let standbyDot = StandbyDot()
+    private let statusDot = StatusDot()
     private var voiceSources = Set<VoiceSource>()
     private var isConnected = false
     private var permissionsReady = false
@@ -84,15 +88,16 @@ final class MenuBarManager {
         updatePermissionStatus(ready: permissionsReady)
     }
 
-    private func refreshStandbyIndicator() {
-        standbyDot.isHidden = !(isConnected && permissionsReady && voiceSources.isEmpty)
+    private func refreshStatusDot() {
+        statusDot.isRecording = !voiceSources.isEmpty
+        statusDot.isHidden = !isConnected || (!permissionsReady && !statusDot.isRecording)
     }
 
     func setVoiceActive(_ active: Bool, source: VoiceSource) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if active { self.voiceSources.insert(source) } else { self.voiceSources.remove(source) }
-            self.refreshStandbyIndicator()
+            self.refreshStatusDot()
         }
     }
 
@@ -104,15 +109,15 @@ final class MenuBarManager {
             .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
         remote?.isTemplate = true
         button.image = remote
-        standbyDot.translatesAutoresizingMaskIntoConstraints = false
-        button.addSubview(standbyDot)
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(statusDot)
         NSLayoutConstraint.activate([
-            standbyDot.widthAnchor.constraint(equalToConstant: 5),
-            standbyDot.heightAnchor.constraint(equalTo: standbyDot.widthAnchor),
-            standbyDot.leadingAnchor.constraint(equalTo: button.centerXAnchor, constant: 5),
-            standbyDot.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -4)
+            statusDot.widthAnchor.constraint(equalToConstant: 5),
+            statusDot.heightAnchor.constraint(equalTo: statusDot.widthAnchor),
+            statusDot.centerXAnchor.constraint(equalTo: button.centerXAnchor, constant: 3),
+            statusDot.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -4)
         ])
-        refreshStandbyIndicator()
+        refreshStatusDot()
         button.title = ""
         rebuildMenu()
         statusItem.menu = menu
@@ -209,7 +214,7 @@ final class MenuBarManager {
             guard let self = self else { return }
             self.isConnected = connected
             if !connected { self.voiceSources.removeAll() }
-            self.refreshStandbyIndicator()
+            self.refreshStatusDot()
             self.statusMenuItem.title = connected ? L("Status: Connected ✓") : L("Status: Disconnected")
             self.statusItem.button?.appearsDisabled = !connected
         }
@@ -219,7 +224,7 @@ final class MenuBarManager {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.permissionsReady = ready
-            self.refreshStandbyIndicator()
+            self.refreshStatusDot()
             self.permissionMenuItem.title = ready
                 ? L("Permissions: Ready ✓") : L("Permissions: Action needed")
             self.permissionMenuItem.action = ready ? nil : #selector(openSetup)
