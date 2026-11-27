@@ -31,6 +31,9 @@ final class MenuBarManager {
     private let statusMenuItem: NSMenuItem
     private let permissionMenuItem: NSMenuItem
     private final class StatusDot: NSView {
+        static let diameter: CGFloat = 5
+        override var isFlipped: Bool { true }
+
         var isRecording = false {
             didSet { if oldValue != isRecording { needsDisplay = true } }
         }
@@ -38,7 +41,9 @@ final class MenuBarManager {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func draw(_ dirtyRect: NSRect) {
             (isRecording ? NSColor.systemRed : NSColor.systemGreen).setFill()
-            NSBezierPath(ovalIn: bounds).fill()
+            let y = isRecording ? bounds.maxY - Self.diameter : bounds.minY
+            let light = NSRect(x: bounds.minX, y: y, width: Self.diameter, height: Self.diameter)
+            NSBezierPath(ovalIn: light).fill()
         }
     }
 
@@ -109,13 +114,16 @@ final class MenuBarManager {
             .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
         remote?.isTemplate = true
         button.image = remote
+        // 在图标右侧预留整列；两种状态共用横坐标，切换时菜单栏宽度固定。
+        let lightOffset = ceil((remote?.size.width ?? 12) / 2) + 3
+        statusItem.length = max(NSStatusBar.system.thickness, 2 * (lightOffset + StatusDot.diameter + 2))
         statusDot.translatesAutoresizingMaskIntoConstraints = false
         button.addSubview(statusDot)
         NSLayoutConstraint.activate([
-            statusDot.widthAnchor.constraint(equalToConstant: 5),
-            statusDot.heightAnchor.constraint(equalTo: statusDot.widthAnchor),
-            statusDot.centerXAnchor.constraint(equalTo: button.centerXAnchor, constant: 3),
-            statusDot.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -4)
+            statusDot.widthAnchor.constraint(equalToConstant: StatusDot.diameter),
+            statusDot.heightAnchor.constraint(equalToConstant: 15),
+            statusDot.leftAnchor.constraint(equalTo: button.centerXAnchor, constant: lightOffset),
+            statusDot.centerYAnchor.constraint(equalTo: button.centerYAnchor)
         ])
         refreshStatusDot()
         button.title = ""
