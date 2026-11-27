@@ -112,11 +112,19 @@ final class MenuBarManager {
         guard let button = statusItem.button else { return }
         let remote = NSImage(systemSymbolName: "appletvremote.gen4.fill", accessibilityDescription: L("Siri Remote"))?
             .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
-        remote?.isTemplate = true
-        button.image = remote
-        // 在图标右侧预留整列；两种状态共用横坐标，切换时菜单栏宽度固定。
-        let lightOffset = ceil((remote?.size.width ?? 12) / 2) + 3
-        statusItem.length = max(NSStatusBar.system.thickness, 2 * (lightOffset + StatusDot.diameter + 2))
+        // 遥控器和右侧灯列整体居中，只为实际内容留一次间距。
+        let glyphSize = remote?.size ?? NSSize(width: 12, height: 16)
+        let contentWidth = ceil(glyphSize.width) + 3 + StatusDot.diameter
+        let icon = NSImage(size: NSSize(width: contentWidth, height: glyphSize.height),
+                           flipped: false) { _ in
+            remote?.draw(in: NSRect(origin: .zero, size: glyphSize))
+            return true
+        }
+        icon.isTemplate = true
+        icon.accessibilityDescription = L("Siri Remote")
+        button.image = icon
+        statusItem.length = contentWidth + 4
+        let lightOffset = contentWidth / 2 - StatusDot.diameter
         statusDot.translatesAutoresizingMaskIntoConstraints = false
         button.addSubview(statusDot)
         NSLayoutConstraint.activate([
