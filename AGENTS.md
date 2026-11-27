@@ -5,8 +5,11 @@ These rules are non-negotiable for every local macOS App build and test deployme
 1. The only App used for live testing is `/Applications/HyperVibe.app`.
 2. After compiling and packaging a user-test build, install that verified bundle at
    `/Applications/HyperVibe.app`. Never launch `app/HyperVibe.app` as the live App.
-3. Preserve the existing stable `siriRemote Local Signing` identity. Verify the packaged bundle's
-   signature before replacing the installed App.
+3. Preserve the existing stable `siriRemote Local Signing` identity where provisioned. For this
+   personal fork, an explicitly selected Apple Development identity is also supported through
+   `HYPERVIBE_SIGN_MODE=apple-development` and `HYPERVIBE_SIGN_IDENTITY` (certificate SHA-1).
+   Reuse that identity for subsequent builds. Verify the packaged bundle's signature before
+   replacing the installed App.
 4. Never silently fall back to ad-hoc signing for a local development build. If the stable identity
    is unavailable or signature verification fails, stop before installation or restart and tell the
    user.

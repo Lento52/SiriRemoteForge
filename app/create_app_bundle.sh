@@ -208,8 +208,7 @@ chmod +x "${APP_BUNDLE}/Contents/XPCServices/HyperVibeCredentialBroker.xpc/Conte
 # but only matter under hardened runtime, so they're harmless here.
 [ -f "HyperVibe.entitlements" ] || { echo "Error: HyperVibe.entitlements not found"; exit 1; }
 
-# Development builds MUST use the stable self-signed identity so TCC grants (Accessibility /
-# Input Monitoring) survive rebuilds. Ad-hoc signing remains available only as an explicit public
+# Repeat local builds with the same identity to preserve macOS permission grants. Ad-hoc signing remains available only as an explicit public
 # release-build choice. There is deliberately no automatic fallback between the two modes.
 SIGN_ID="siriRemote Local Signing"
 SIGN_KC="$HOME/Library/Keychains/siriremote-signing.keychain-db"
@@ -232,11 +231,19 @@ if [ "$SIGN_MODE" = "stable" ]; then
     # certificate check above plus the real `codesign` operations below are the authoritative gate.
     CODESIGN_KEYCHAIN_ARGS=(--keychain "$SIGN_KC")
     echo "Signing with stable local identity ($SIGN_ID)..."
+elif [ "$SIGN_MODE" = "apple-development" ]; then
+    SIGN_ID="${HYPERVIBE_SIGN_IDENTITY:-}"
+    if ! [[ "$SIGN_ID" =~ ^[[:xdigit:]]{40}$ ]] || ! security find-identity -v -p codesigning |
+        awk -v fingerprint="$SIGN_ID" 'toupper($2) == toupper(fingerprint) && /"Apple Development: / { found=1 } END { exit !found }'; then
+        echo "Error: select a valid Apple Development identity by its SHA-1 fingerprint in HYPERVIBE_SIGN_IDENTITY."
+        exit 1
+    fi
+    echo "Signing with the selected Apple Development identity..."
 elif [ "$SIGN_MODE" = "adhoc" ]; then
     SIGN_ID="-"
     echo "Ad-hoc signing (explicit public/release build)..."
 else
-    echo "Error: HYPERVIBE_SIGN_MODE must be 'stable' or 'adhoc', got: $SIGN_MODE"
+    echo "Error: HYPERVIBE_SIGN_MODE must be 'stable', 'apple-development' or 'adhoc', got: $SIGN_MODE"
     exit 1
 fi
 
