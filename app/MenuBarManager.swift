@@ -2,7 +2,7 @@
 //  MenuBarManager.swift
 //  siriRemote
 //
-//  The menu-bar status item: a drawn walkie-talkie icon, a connection-status line, and
+//  The menu-bar status item: a remote icon, a connection-status line, and
 //  Settings… / Quit. All button / ring / gesture mapping lives in Settings → Layout, driven by
 //  the config engine — there are no mapping submenus here.
 //
@@ -30,6 +30,18 @@ final class MenuBarManager {
     private let menu: NSMenu
     private let statusMenuItem: NSMenuItem
     private let permissionMenuItem: NSMenuItem
+    private final class StandbyDot: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.systemGreen.setFill()
+            NSBezierPath(ovalIn: bounds).fill()
+        }
+    }
+
+    enum VoiceSource { case remoteShortcut, dictation }
+
+    private let standbyDot = StandbyDot()
+    private var voiceSources = Set<VoiceSource>()
     private var isConnected = false
     private var permissionsReady = false
     private var demoRemoteVisible = false
@@ -72,54 +84,35 @@ final class MenuBarManager {
         updatePermissionStatus(ready: permissionsReady)
     }
 
-    // MARK: - Icon
+    private func refreshStandbyIndicator() {
+        standbyDot.isHidden = !(isConnected && permissionsReady && voiceSources.isEmpty)
+    }
 
-    /// Procedurally draw the menu-bar icon — a walkie-talkie glyph (antenna + body with a display
-    /// slot and a speaker hole, punched via even-odd fill). Template image, so it tints correctly.
-    private static func makeWaveIcon(updateAvailable: Bool = false) -> NSImage {
-        let pt: CGFloat = 18
-        let image = NSImage(size: NSSize(width: pt, height: pt), flipped: true) { rect in
-            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            let s = rect.width
-
-            ctx.translateBy(x: s / 2, y: s / 2)
-            ctx.scaleBy(x: 2, y: 2)
-            ctx.translateBy(x: -s / 2, y: -s / 2)
-
-            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-
-            let antenna = CGRect(x: 0.5260 * s, y: 0.1944 * s, width: 0.0638 * s, height: 0.1594 * s)
-            let body    = CGRect(x: 0.3348 * s, y: 0.3538 * s, width: 0.3187 * s, height: 0.4462 * s)
-            let display = CGRect(x: 0.3986 * s, y: 0.6406 * s, width: 0.1911 * s, height: 0.0956 * s)
-            let speakerR: CGFloat = 0.0956 * s
-            let speaker = CGRect(x: 0.4942 * s - speakerR, y: 0.5131 * s - speakerR,
-                                 width: 2 * speakerR, height: 2 * speakerR)
-
-            let path = CGMutablePath()
-            path.addPath(CGPath(roundedRect: antenna, cornerWidth: 0.0278 * s, cornerHeight: 0.0278 * s, transform: nil))
-            path.addPath(CGPath(roundedRect: body,    cornerWidth: 0.0556 * s, cornerHeight: 0.0556 * s, transform: nil))
-            path.addPath(CGPath(roundedRect: display, cornerWidth: 0.0278 * s, cornerHeight: 0.0278 * s, transform: nil))
-            path.addEllipse(in: speaker)
-
-            ctx.addPath(path)
-            ctx.fillPath(using: .evenOdd)
-            if updateAvailable {
-                // A compact status dot remains legible in both menu-bar appearances because the
-                // whole image is a template. It does not resize or shift the familiar remote mark.
-                ctx.fillEllipse(in: CGRect(x: 0.72 * s, y: 0.08 * s,
-                                           width: 0.18 * s, height: 0.18 * s))
-            }
-            return true
+    func setVoiceActive(_ active: Bool, source: VoiceSource) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if active { self.voiceSources.insert(source) } else { self.voiceSources.remove(source) }
+            self.refreshStandbyIndicator()
         }
-        image.isTemplate = true
-        return image
     }
 
     // MARK: - Menu
 
     private func setupMenuBar() {
         guard let button = statusItem.button else { return }
-        button.image = Self.makeWaveIcon()
+        let remote = NSImage(systemSymbolName: "appletvremote.gen4.fill", accessibilityDescription: L("Siri Remote"))?
+            .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
+        remote?.isTemplate = true
+        button.image = remote
+        standbyDot.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(standbyDot)
+        NSLayoutConstraint.activate([
+            standbyDot.widthAnchor.constraint(equalToConstant: 5),
+            standbyDot.heightAnchor.constraint(equalTo: standbyDot.widthAnchor),
+            standbyDot.leadingAnchor.constraint(equalTo: button.centerXAnchor, constant: 5),
+            standbyDot.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -4)
+        ])
+        refreshStandbyIndicator()
         button.title = ""
         rebuildMenu()
         statusItem.menu = menu
@@ -206,7 +199,6 @@ final class MenuBarManager {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.availableUpdateVersion = version
-            self.statusItem.button?.image = Self.makeWaveIcon(updateAvailable: version != nil)
             self.statusItem.button?.toolTip = version.map { L("Update %@ Available", $0) }
             self.rebuildMenu()
         }
@@ -216,6 +208,8 @@ final class MenuBarManager {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.isConnected = connected
+            if !connected { self.voiceSources.removeAll() }
+            self.refreshStandbyIndicator()
             self.statusMenuItem.title = connected ? L("Status: Connected ✓") : L("Status: Disconnected")
             self.statusItem.button?.appearsDisabled = !connected
         }
@@ -225,6 +219,7 @@ final class MenuBarManager {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.permissionsReady = ready
+            self.refreshStandbyIndicator()
             self.permissionMenuItem.title = ready
                 ? L("Permissions: Ready ✓") : L("Permissions: Action needed")
             self.permissionMenuItem.action = ready ? nil : #selector(openSetup)

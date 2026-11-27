@@ -2,8 +2,7 @@
 //  StatusWidget.swift
 //  HyperVibe
 //
-//  Optional, always-on status surface. It rests on the current layer, springs briefly to the
-//  action/app that just became active, then settles back to the layer. The panel never activates
+//  Transient feedback for recording and remote actions. The panel never activates
 //  HyperVibe, joins every Space (including full-screen Spaces), and remembers a display-relative
 //  drag position so monitor rearrangements and resolution changes do not strand it off-screen.
 //
@@ -168,7 +167,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
 
     private struct Surface {
         let panel: StatusPanel
-        let idleRemote: NSImageView
         let cardView: NSVisualEffectView
         let cardLayer: CALayer
         let tintLayer: CAGradientLayer
@@ -246,7 +244,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
     private var isTransient = false
     private var enabled = false
     private var idleGeneration = 0
-    private var visibilityGeneration = 0
     private var moveGeneration = 0
     private var holdGeneration = 0
     private var isMovingProgrammatically = false
@@ -476,9 +473,9 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
             self.isTransient = false
             guard self.enabled else { return }
 
-            // Visible only while a remote is connected: appear with an entrance, leave with an exit.
+            // 连上遥控器后先待命，收到活动事件时再显示浮窗。
             if connected {
-                self.showPanel(entranceAnimated: animated)
+                self.prepareIdlePanel()
             } else {
                 self.hidePanel(animated: animated)
             }
@@ -995,7 +992,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
 
     private func setEnabledOnMain(_ wanted: Bool) {
         guard wanted != enabled else {
-            if wanted && isConnected {
+            if wanted && isConnected && targetExpansion > 0 {
                 ensureReachable()
                 surface.panel.orderFrontRegardless()
             }
@@ -1004,44 +1001,25 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         enabled = wanted
         if wanted {
             // The feature is on, but the surface only appears while a remote is actually connected.
-            if isConnected { showPanel(entranceAnimated: true) }
+            if isConnected { prepareIdlePanel() }
         } else {
             hidePanel(animated: true)
         }
     }
 
-    /// Bring the widget on screen and land on the current layer. Only called while `enabled &&
-    /// isConnected`, so the entrance doubles as the connect animation.
-    private func showPanel(entranceAnimated: Bool) {
-        visibilityGeneration += 1
+    private func prepareIdlePanel() {
         idleGeneration += 1
         restorePosition()
-        let displayID = bestScreen(for: surface.panel.frame)?.hudDisplayID ?? 0
-        print("🧭 status widget shown — display \(displayID), frame \(NSStringFromRect(surface.panel.frame))")
         isTransient = false
         activeContinuousFamily = nil
         currentPresentationKey = nil
         setExpanded(false, animated: false)
         configure(face: idleFace())
-        surface.panel.orderFrontRegardless()
-        guard entranceAnimated else {
-            surface.panel.alphaValue = 1
-            return
-        }
-        surface.panel.alphaValue = 0
-        animateWidgetAppear()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.26
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            self.surface.panel.animator().alphaValue = 1
-        }
     }
 
     /// Take the widget off screen with a precise exit, and reset any transient/hold state so the
     /// next entrance starts clean.
     private func hidePanel(animated: Bool) {
-        visibilityGeneration += 1
-        let generation = visibilityGeneration
         idleGeneration += 1
         activeContinuousFamily = nil
         awaitingNativeVoicePhase = false
@@ -1060,109 +1038,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         setVoiceWaveformActive(false, immediate: true)
         stopHoldRipple(immediate: true)
 
-        guard animated else {
-            surface.panel.alphaValue = 0
-            surface.panel.orderOut(nil)
-            return
-        }
-        animateWidgetDisappear()
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.24
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            self.surface.panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            guard let self = self, self.visibilityGeneration == generation,
-                  !(self.enabled && self.isConnected) else { return }
-            self.surface.panel.orderOut(nil)
-        })
-    }
-
-    /// The component's physical frame never scales: its persistent Layer edge must stay perfectly
-    /// registered with the material card. Entrance personality therefore belongs only to the icon
-    /// and internal ripples while the whole panel performs its ordinary alpha fade.
-    private func animateWidgetAppear() {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        if #available(macOS 14.0, *), currentSymbolName != nil {
-            let options = SymbolEffectOptions.speed(2.65)
-            surface.iconView.addSymbolEffect(.appear.up.byLayer, options: options)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) { [weak self] in
-                self?.surface.iconView.removeSymbolEffect(ofType: .appear,
-                                                          options: options, animated: false)
-            }
-        }
-
-        let iconPop = CAKeyframeAnimation(keyPath: "transform")
-        iconPop.values = [
-            NSValue(caTransform3D: spatialTransform(z: -16, scale: 0.76,
-                                                    rotateX: -0.72, rotateY: 0.22,
-                                                    perspective: 300)),
-            NSValue(caTransform3D: spatialTransform(z: 6, scale: 1.04,
-                                                    rotateX: 0.06, rotateY: -0.02,
-                                                    perspective: 300)),
-            NSValue(caTransform3D: spatialTransform(perspective: 300)),
-        ]
-        iconPop.keyTimes = [0.0, 0.72, 1.0]
-        iconPop.duration = 0.28
-        iconPop.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 0.84, 0.20, 1.0)
-        surface.iconView.layer?.add(iconPop, forKey: "widgetAppearIcon")
-
-        for (index, ripple) in surface.rippleLayers.enumerated() {
-            ripple.removeAnimation(forKey: "holdRipple")
-            let rScale = CAKeyframeAnimation(keyPath: "transform.scale")
-            rScale.values = [0.96, 1.08]
-            rScale.keyTimes = [0.0, 1.0]
-            let rOpacity = CAKeyframeAnimation(keyPath: "opacity")
-            rOpacity.values = [0.0, 0.22, 0.0]
-            rOpacity.keyTimes = [0.0, 0.24, 1.0]
-            let rGroup = CAAnimationGroup()
-            rGroup.animations = [rScale, rOpacity]
-            let offset = Double(index) * 0.024
-            rGroup.duration = 0.28 - offset
-            rGroup.beginTime = ripple.convertTime(CACurrentMediaTime(), from: nil)
-                + offset
-            rGroup.fillMode = .backwards
-            rGroup.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            ripple.add(rGroup, forKey: "widgetAppearRing")
-        }
-    }
-
-    /// Disconnect is the inverse relationship, not a reversed celebration: the semantic content
-    /// resolves inward while the panel performs its independent 240 ms fade. The card itself never
-    /// scales, so its location remains a stable frame of reference until it is gone.
-    private func animateWidgetDisappear() {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        if #available(macOS 14.0, *), currentSymbolName != nil {
-            let options = SymbolEffectOptions.speed(2.8)
-            surface.iconView.addSymbolEffect(.disappear.down.byLayer, options: options)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) { [weak self] in
-                self?.surface.iconView.removeSymbolEffect(ofType: .disappear,
-                                                          options: options, animated: false)
-            }
-        }
-
-        let icon = CAKeyframeAnimation(keyPath: "transform")
-        icon.values = [
-            NSValue(caTransform3D: spatialTransform(perspective: 300)),
-            NSValue(caTransform3D: spatialTransform(z: 3, scale: 0.97,
-                                                    rotateX: -0.08,
-                                                    perspective: 300)),
-            NSValue(caTransform3D: spatialTransform(z: -18, scale: 0.68,
-                                                    rotateX: 0.72, rotateY: -0.24,
-                                                    perspective: 300)),
-        ]
-        icon.keyTimes = [0.0, 0.34, 1.0]
-        icon.duration = 0.22
-        icon.timingFunction = CAMediaTimingFunction(controlPoints: 0.30, 0, 1, 1)
-        surface.iconView.layer?.add(icon, forKey: "widgetDisappearIcon")
-
-        for (index, label) in [surface.titleLabel, surface.subtitleLabel].enumerated() {
-            let drift = CABasicAnimation(keyPath: "transform.translation.x")
-            drift.fromValue = 0
-            drift.toValue = -1.5
-            drift.duration = 0.18 + Double(index) * 0.02
-            drift.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            label.layer?.add(drift, forKey: "widgetDisappearText")
-        }
+        setExpanded(false, animated: animated)
     }
 
     private func presentTransient(_ face: Face, duration: TimeInterval, animate: Bool,
@@ -1194,8 +1070,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
                          playSymbolCue: Bool = true) {
         // Content updates never surface the panel while it is intentionally hidden (no remote).
         guard enabled, isConnected else { return }
-        ensureReachable()
-        surface.panel.orderFrontRegardless()
         voicePipelineAccentRoot?.removeFromSuperlayer()
         voicePipelineAccentRoot = nil
         setExpanded(face.key != "idle", animated: animated)
@@ -4842,7 +4716,6 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
     private func applyLayerIdentity(animated: Bool) {
         let dark = surface.panel.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let rawTint = layerAppearance(currentLayerID).tint
-        surface.idleRemote.contentTintColor = rawTint
         let tint = rawTint.usingColorSpace(.deviceRGB) ?? rawTint
         let borderColors = [
             tint.withAlphaComponent(dark ? 0.18 : 0.14).cgColor,
@@ -5071,9 +4944,16 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
                      from: oldHoldRimShadow, to: tintRGB.cgColor, key: "holdRimShadowTint")
     }
 
-    // MARK: - 待机徽标与活动卡片
+    // MARK: - 浮窗收放
 
     private func setExpanded(_ expanded: Bool, animated: Bool) {
+        if expanded {
+            guard enabled, isConnected else { return }
+            if !surface.panel.isVisible {
+                ensureReachable()
+                surface.panel.orderFrontRegardless()
+            }
+        }
         let target: CGFloat = expanded ? 1 : 0
         if targetExpansion == target, animated || expansion == target { return }
         resizeTimer?.invalidate()
@@ -5100,7 +4980,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    // 用展开后的边界保存位置，兼容旧坐标。拖动徽标时，完整卡片也能留在屏幕内。
+    // 用展开后的边界保存位置，兼容旧坐标。拖动浮窗时，完整卡片也能留在屏幕内。
     private var expandedFrame: NSRect {
         let frame = surface.panel.frame
         let inset = surface.cardView.frame.minX
@@ -5140,10 +5020,8 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
                                                 cornerHeight: cornerRadius + 0.6, transform: nil)
         surface.contentView.alphaValue = fraction
         surface.accentLayer.isHidden = fraction < 1
-        surface.idleRemote.frame = bounds
-        surface.idleRemote.alphaValue = 1 - fraction
-        surface.idleRemote.isHidden = fraction == 1
-        surface.panel.contentView?.alphaValue = 0.6 + 0.4 * fraction
+        surface.panel.alphaValue = fraction
+        if fraction == 0 { surface.panel.orderOut(nil) }
         CATransaction.commit()
     }
 
@@ -5200,11 +5078,11 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         moveGeneration += 1
         restorePosition()
         materialAppearanceChanged()
-        surface.panel.orderFrontRegardless()
+        if targetExpansion > 0 { surface.panel.orderFrontRegardless() }
     }
 
     private func activeSpaceChanged() {
-        guard enabled, isConnected else { return }
+        guard enabled, isConnected, targetExpansion > 0 else { return }
         // macOS may drop an already-ordered auxiliary panel during a full-screen Space transition.
         // Re-ordering is idempotent and does not activate HyperVibe.
         ensureReachable()
@@ -5592,16 +5470,9 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         layerIdentityBorder.mask = identityMask
         card.layer?.addSublayer(layerIdentityBorder)
 
-        let idleRemote = NSImageView()
-        idleRemote.image = NSImage(systemSymbolName: "appletvremote.gen4.fill",
-                                   accessibilityDescription: L("Siri Remote"))
-        idleRemote.symbolConfiguration = .init(pointSize: 23, weight: .medium)
-        idleRemote.imageScaling = .scaleNone
-        idleRemote.isHidden = true
-        card.addSubview(idleRemote)
         root.addSubview(card)
         panel.contentView = root
-        return Surface(panel: panel, idleRemote: idleRemote, cardView: card, cardLayer: card.layer!,
+        return Surface(panel: panel, cardView: card, cardLayer: card.layer!,
                        tintLayer: tintLayer,
                        layerIdentityAura: layerIdentityAura,
                        layerIdentityBorder: layerIdentityBorder,

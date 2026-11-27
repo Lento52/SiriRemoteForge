@@ -1306,7 +1306,7 @@ struct SettingsView: View {
                 rowLabel(L("Menu bar icon"), "menubar.rectangle")
             }
             Toggle(isOn: $model.tune.statusWidgetEnabled) {
-                rowLabel(L("Always-on status widget"), "rectangle.on.rectangle")
+                rowLabel(L("Remote action and voice overlay"), "rectangle.on.rectangle")
             }
             Toggle(isOn: $model.tune.demoRemoteEnabled) {
                 rowLabel(L("Floating demo remote"), "appletvremote.gen4.fill")

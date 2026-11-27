@@ -1483,11 +1483,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         remoteInputHandler?.onContinuousActionBegan = { [weak self, weak persistentStatus] handled in
             if case .pushToTalk = handled.action {
+                self?.menuBarManager.setVoiceActive(true, source: .remoteShortcut)
                 self?.builtinMicFeeder?.setVoiceMetering(true)
             }
             persistentStatus?.beginContinuousAction(handled)
         }
         remoteInputHandler?.onContinuousActionEnded = { [weak self, weak persistentStatus] key in
+            self?.menuBarManager.setVoiceActive(false, source: .remoteShortcut)
             self?.builtinMicFeeder?.setVoiceMetering(false)
             persistentStatus?.endContinuousAction(key: key)
         }
@@ -1574,6 +1576,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("🎙 Voice mode → \(next.rawValue) (Mute + Side)")
         }
         dictation.onMeteringChanged = { [weak self, weak keyboard] active in
+            self?.menuBarManager.setVoiceActive(active, source: .dictation)
             self?.builtinMicFeeder?.setVoiceMetering(active)
             if !active { keyboard?.captureEnded() }
         }
@@ -1699,9 +1702,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         connected ? self.layerHUD?.showRemoteConnected()
                                   : self.layerHUD?.showRemoteDisconnected()
                     }
-                    // The always-on status widget rests on a "not connected" face and plays a
-                    // brief connect animation on the connect edge (setConnected de-duplicates the
-                    // several per-interface callbacks internally).
                     self.statusWidget?.setConnected(connected)
 
                     // Reconnecting is itself a wake signal: the remote sleeps after a few minutes
