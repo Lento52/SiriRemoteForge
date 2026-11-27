@@ -168,6 +168,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
 
     private struct Surface {
         let panel: StatusPanel
+        let idleRemote: NSImageView
         let cardView: NSVisualEffectView
         let cardLayer: CALayer
         let tintLayer: CAGradientLayer
@@ -225,6 +226,11 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
     private let windowSize = NSSize(width: 244, height: 112)
     private let cardFrame = NSRect(x: 20, y: 20, width: 204, height: 72)
     private let cornerRadius: CGFloat = 20
+    private let badgeSide: CGFloat = 40
+    private var expansion: CGFloat = 1
+    private var targetExpansion: CGFloat = 1
+    private var resizeTimer: Timer?
+
     private let defaults: UserDefaults
     private let surface: Surface
 
@@ -343,6 +349,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
     }
 
     deinit {
+        resizeTimer?.invalidate()
         for token in observerTokens {
             NotificationCenter.default.removeObserver(token)
             NSWorkspace.shared.notificationCenter.removeObserver(token)
@@ -379,8 +386,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// `nil` is the base layer. A layer switch is itself a visible state transition and becomes the
-    /// new resting face immediately; a stale action timer can never snap it back to the old layer.
+    /// 切层时短暂显示层名，待机徽标沿用目标层的颜色。
     func setLayer(_ layer: String?, animated: Bool = true) {
         onMain { [weak self] in
             guard let self = self else { return }
@@ -395,16 +401,23 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
             guard !self.isHolding else { return }
             self.isTransient = false
             guard self.enabled else { return }
-            if self.completeNativeVoiceHandoff(to: self.idleFace(), pipelineStage: nil) {
+            let changed = previousLayerID != destinationLayerID
+            let destination = changed ? self.layerFace() : self.idleFace()
+            if self.completeNativeVoiceHandoff(to: destination, pipelineStage: nil) {
+                if changed { self.scheduleIdle(after: 0.8) }
                 return
             }
-            let iconMotion: IconMotion = animated && previousLayerID != destinationLayerID
+            let iconMotion: IconMotion = animated && changed
                 ? .layerRebuild(direction: self.layerTransitionDirection(
                     from: previousLayerID, to: destinationLayerID
                 ))
                 : .ordinary
-            self.present(self.idleFace(), animated: animated, returningToIdle: false,
-                         iconMotion: iconMotion)
+            if changed {
+                self.presentTransient(destination, duration: 0.8, animate: animated,
+                                      iconMotion: iconMotion)
+            } else {
+                self.present(destination, animated: animated, returningToIdle: true)
+            }
         }
     }
 
@@ -670,6 +683,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
                     guard let self = self, self.enabled, self.isHolding,
                           self.holdGeneration == generation else { return }
                     self.holdVisualIsVisible = true
+                    self.setExpanded(true, animated: true)
                     self.startHoldRipple()
                     self.startHoldProgress(startedAt: startedAt)
                 }
@@ -710,10 +724,11 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
                 // follows the same rule: release is the interaction boundary, so it must reveal the
                 // Layer immediately rather than dwelling on a redundant “Cancelled” confirmation.
                 self.isTransient = false
-                let destination = self.idleFace()
+                let destination = selectedIsLayer ? self.layerFace() : self.idleFace()
                 self.present(destination,
                              animated: self.currentPresentationKey != destination.key,
                              returningToIdle: true)
+                if selectedIsLayer { self.scheduleIdle(after: 0.8) }
             } else if let selected = selected {
                 self.presentHold(selected,
                                  subtitle: selected.isCancel
@@ -763,6 +778,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
                 self.currentPresentationKey = face.key
                 self.applyColors(face.tint, animated: true)
             }
+            self.setExpanded(true, animated: true)
             self.setVoiceWaveformActive(true)
         }
     }
@@ -853,6 +869,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         guard awaitingNativeVoicePhase else { return false }
         awaitingNativeVoicePhase = false
         nativeVoiceHandoffGeneration += 1
+        setExpanded(face.key != "idle", animated: true)
         configure(face: face, applyPalette: false)
         applyColors(face.tint, animated: true)
         currentPresentationKey = face.key
@@ -1027,6 +1044,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         isTransient = false
         activeContinuousFamily = nil
         currentPresentationKey = nil
+        setExpanded(false, animated: false)
         configure(face: idleFace())
         surface.panel.orderFrontRegardless()
         guard entranceAnimated else {
@@ -1204,8 +1222,15 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         surface.panel.orderFrontRegardless()
         voicePipelineAccentRoot?.removeFromSuperlayer()
         voicePipelineAccentRoot = nil
+        setExpanded(face.key != "idle", animated: animated)
+        if face.key == "idle" {
+            currentFaceTint = face.tint
+            currentPresentationKey = face.key
+            applyColors(face.tint, animated: animated)
+            return
+        }
         let contentChanges = currentPresentationKey != face.key
-        let outgoing = animated && contentChanges ? makeNormalContentProxy() : nil
+        let outgoing = animated && contentChanges && expansion > 0 ? makeNormalContentProxy() : nil
         applyColors(face.tint, animated: animated && contentChanges)
         configure(face: face)
         currentPresentationKey = face.key
@@ -1326,6 +1351,11 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
     }
 
     private func idleFace() -> Face {
+        Face(key: "idle", title: "", subtitle: "", image: nil, symbolName: "appletvremote.gen4.fill",
+             symbolCue: nil, tint: layerAppearance(currentLayerID).tint, controlState: nil)
+    }
+
+    private func layerFace() -> Face {
         let appearance = layerAppearance(currentLayerID)
         let symbolName = appearance.icon
         return Face(key: "layer:\(currentLayerID)", title: appearance.label,
@@ -4842,6 +4872,7 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
     private func applyLayerIdentity(animated: Bool) {
         let dark = surface.panel.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let rawTint = layerAppearance(currentLayerID).tint
+        surface.idleRemote.contentTintColor = rawTint
         let tint = rawTint.usingColorSpace(.deviceRGB) ?? rawTint
         let borderColors = [
             tint.withAlphaComponent(dark ? 0.18 : 0.14).cgColor,
@@ -5070,6 +5101,82 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
                      from: oldHoldRimShadow, to: tintRGB.cgColor, key: "holdRimShadowTint")
     }
 
+    // MARK: - 待机徽标与活动卡片
+
+    private func setExpanded(_ expanded: Bool, animated: Bool) {
+        let target: CGFloat = expanded ? 1 : 0
+        if targetExpansion == target, animated || expansion == target { return }
+        resizeTimer?.invalidate()
+        resizeTimer = nil
+        targetExpansion = target
+        guard animated, surface.panel.isVisible,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            layoutExpansion(target)
+            return
+        }
+        let start = expansion
+        let began = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1 / 60.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let t = CGFloat(min(1, (CACurrentMediaTime() - began) / 0.23))
+            let eased = t * t * (3 - 2 * t)
+            self.layoutExpansion(start + (target - start) * eased)
+            if t == 1 {
+                timer.invalidate()
+                self.resizeTimer = nil
+            }
+        }
+        resizeTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    // 用展开后的边界保存位置，兼容旧坐标。拖动徽标时，完整卡片也能留在屏幕内。
+    private var expandedFrame: NSRect {
+        let frame = surface.panel.frame
+        let inset = surface.cardView.frame.minX
+        return NSRect(x: frame.maxX - inset + cardFrame.minX - windowSize.width,
+                      y: frame.maxY - inset + cardFrame.minY - windowSize.height,
+                      width: windowSize.width, height: windowSize.height)
+    }
+
+    private func layoutExpansion(_ fraction: CGFloat) {
+        let reference = expandedFrame
+        let width = (badgeSide + (cardFrame.width - badgeSide) * fraction).rounded()
+        let height = (badgeSide + (cardFrame.height - badgeSide) * fraction).rounded()
+        let inset = (3 + (cardFrame.minX - 3) * fraction).rounded()
+        let frame = NSRect(x: reference.maxX - cardFrame.minX - width - inset,
+                           y: reference.maxY - cardFrame.minY - height - inset,
+                           width: width + 2 * inset, height: height + 2 * inset)
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let card = bounds.offsetBy(dx: inset, dy: inset)
+        expansion = fraction
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        isMovingProgrammatically = true
+        surface.panel.setFrame(frame, display: false)
+        isMovingProgrammatically = false
+        surface.cardView.frame = card
+        surface.tintLayer.frame = bounds
+        surface.layerIdentityBorder.frame = bounds
+        if let rim = surface.layerIdentityBorder.mask as? CAShapeLayer {
+            rim.frame = bounds
+            rim.path = CGPath(roundedRect: bounds.insetBy(dx: 0.72, dy: 0.72),
+                              cornerWidth: cornerRadius - 0.72, cornerHeight: cornerRadius - 0.72,
+                              transform: nil)
+        }
+        surface.layerIdentityAura.frame = CGRect(origin: .zero, size: frame.size)
+        surface.layerIdentityAura.path = CGPath(roundedRect: card.insetBy(dx: -0.6, dy: -0.6),
+                                                cornerWidth: cornerRadius + 0.6,
+                                                cornerHeight: cornerRadius + 0.6, transform: nil)
+        surface.contentView.alphaValue = fraction
+        surface.accentLayer.isHidden = fraction < 1
+        surface.idleRemote.frame = bounds
+        surface.idleRemote.alphaValue = 1 - fraction
+        surface.idleRemote.isHidden = fraction == 1
+        surface.panel.contentView?.alphaValue = 0.6 + 0.4 * fraction
+        CATransaction.commit()
+    }
+
     // MARK: - Position persistence / display recovery
 
     func windowDidMove(_ notification: Notification) {
@@ -5097,8 +5204,8 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
 
     private func settleAndSavePosition() {
         guard let screen = bestScreen(for: surface.panel.frame) else { return }
-        let origin = clampedOrigin(surface.panel.frame.origin, in: screen.visibleFrame)
-        if origin != surface.panel.frame.origin { setFrameOrigin(origin) }
+        let origin = clampedOrigin(expandedFrame.origin, in: screen.visibleFrame)
+        if origin != expandedFrame.origin { setFrameOrigin(origin) }
         savePosition(on: screen)
     }
 
@@ -5146,8 +5253,8 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         let visible = screen.visibleFrame
         let availableWidth = max(1, visible.width - windowSize.width)
         let availableHeight = max(1, visible.height - windowSize.height)
-        let nx = clamp((surface.panel.frame.minX - visible.minX) / availableWidth)
-        let ny = clamp((surface.panel.frame.minY - visible.minY) / availableHeight)
+        let nx = clamp((expandedFrame.minX - visible.minX) / availableWidth)
+        let ny = clamp((expandedFrame.minY - visible.minY) / availableHeight)
         defaults.set(Int(screen.hudDisplayID), forKey: DefaultsKey.displayID)
         defaults.set(Double(nx), forKey: DefaultsKey.normalizedX)
         defaults.set(Double(ny), forKey: DefaultsKey.normalizedY)
@@ -5169,7 +5276,10 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
 
     private func setFrameOrigin(_ point: NSPoint) {
         isMovingProgrammatically = true
-        surface.panel.setFrameOrigin(point)
+        let reference = expandedFrame.origin
+        let current = surface.panel.frame.origin
+        surface.panel.setFrameOrigin(NSPoint(x: current.x + point.x - reference.x,
+                                            y: current.y + point.y - reference.y))
         DispatchQueue.main.async { [weak self] in self?.isMovingProgrammatically = false }
     }
 
@@ -5512,9 +5622,16 @@ final class StatusWidgetController: NSObject, NSWindowDelegate {
         layerIdentityBorder.mask = identityMask
         card.layer?.addSublayer(layerIdentityBorder)
 
+        let idleRemote = NSImageView()
+        idleRemote.image = NSImage(systemSymbolName: "appletvremote.gen4.fill",
+                                   accessibilityDescription: L("Siri Remote"))
+        idleRemote.symbolConfiguration = .init(pointSize: 23, weight: .medium)
+        idleRemote.imageScaling = .scaleNone
+        idleRemote.isHidden = true
+        card.addSubview(idleRemote)
         root.addSubview(card)
         panel.contentView = root
-        return Surface(panel: panel, cardView: card, cardLayer: card.layer!,
+        return Surface(panel: panel, idleRemote: idleRemote, cardView: card, cardLayer: card.layer!,
                        tintLayer: tintLayer,
                        layerIdentityAura: layerIdentityAura,
                        layerIdentityBorder: layerIdentityBorder,
